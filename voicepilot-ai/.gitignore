@@ -1,0 +1,24 @@
+# Secrets: never commit. Copy the matching .env.example and fill it in.
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Runtime data (audio now lives in object storage)
+backend/uploads/
+
+# Frontend
+node_modules/
+dist/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

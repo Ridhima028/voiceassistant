@@ -38,9 +38,77 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
     volumes:
       - ./backend:/app
 
+  redis:
+    image: redis:7-alpine
+    container_name: voicepilot-redis
+    restart: always
+
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build:
+      context: ./backend
+
+    # No container_name here: names must be unique, and a fixed name would
+    # block `docker compose up --scale worker=N`.
+
+    command: celery -A celery_app.celery_app worker --loglevel=info --concurrency=1
+
+    env_file:
+      - ./backend/.env
+
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+    volumes:
+      - ./backend:/app
+
+  minio:
+    # S3-compatible object storage for audio files. The backend talks to it
+    # with plain boto3, so moving to AWS S3 later only changes env vars.
+    # minio/minio is no longer published; Chainguard builds it from upstream
+    # source. Its entrypoint is the minio binary, so `command` is unchanged.
+    image: cgr.dev/chainguard/minio:latest
+    container_name: voicepilot-minio
+    restart: always
+
+    command: server /data --console-address ":9001"
+
+    # Read from the .env next to this file (compose variable substitution).
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+
+    volumes:
+      - minio-data:/data
+
+    healthcheck:
+      test: [ "CMD", "mc", "ready", "local" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   postgres-data:
+  minio-data:

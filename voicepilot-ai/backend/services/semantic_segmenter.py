@@ -15,24 +15,29 @@ those raw segments using two signals together:
 
 A chunk also has a hard max-duration cap, so one very consistent topic
 doesn't turn into a five-minute unreadable block.
+
+Uses Gemini's embedding API instead of a local model — this used to run on
+sentence-transformers (which pulls in PyTorch, a 2GB+ download that isn't
+needed anywhere else in this project). Calling the API instead means no
+heavy local install, at the cost of needing network access + a Gemini key.
 """
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from google.genai.types import EmbedContentConfig
 
-# Loaded once at import time and reused across every transcription —
-# loading it per-request would be slow and wasteful.
-_embedder: SentenceTransformer | None = None
+from config import GEMINI_EMBEDDING_MODEL
+from services.gemini_client import get_client
 
 
-def _get_embedder() -> SentenceTransformer:
-    global _embedder
-    if _embedder is None:
-        # all-MiniLM-L6-v2: small (~80MB), fast on CPU, good enough for
-        # sentence-level similarity. Not meant to be a top-tier embedding
-        # model — just good enough to tell "same topic" from "new topic".
-        _embedder = SentenceTransformer("all-MiniLM-L6-v2")
-    return _embedder
+def _embed_texts(texts: list[str]) -> np.ndarray:
+    """One batched API call for every segment's text, not one call per segment."""
+    client = get_client()
+    response = client.models.embed_content(
+        model=GEMINI_EMBEDDING_MODEL,
+        contents=texts,
+        config=EmbedContentConfig(task_type="SEMANTIC_SIMILARITY"),
+    )
+    return np.array([embedding.values for embedding in response.embeddings])
 
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -61,9 +66,8 @@ def semantic_chunk(
     if len(raw_segments) == 1:
         return [dict(raw_segments[0])]
 
-    model = _get_embedder()
     texts = [seg["text"] for seg in raw_segments]
-    embeddings = model.encode(texts, convert_to_numpy=True)
+    embeddings = _embed_texts(texts)
 
     chunks: list[dict] = []
 
