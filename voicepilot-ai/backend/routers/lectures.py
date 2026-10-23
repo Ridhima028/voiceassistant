@@ -1,3 +1,4 @@
+import asyncio
 import os
 import tempfile
 import uuid
@@ -455,15 +456,28 @@ async def create_study_pack(
 
     generated, skipped, failed = [], [], {}
 
+    to_run = []
     for field, generator in jobs:
         if getattr(lecture, field) and not regenerate:
             skipped.append(field)
-            continue
-        try:
-            setattr(lecture, field, await generator())
+        else:
+            to_run.append((field, generator))
+
+    # The generators are independent network calls, so run them concurrently:
+    # total time ≈ the slowest one, not the sum of all. return_exceptions keeps
+    # one failure from cancelling the rest. Results are applied to the ORM
+    # object only after gather, so the session is never touched concurrently.
+    results = await asyncio.gather(
+        *(generator() for _, generator in to_run),
+        return_exceptions=True,
+    )
+
+    for (field, _), result in zip(to_run, results):
+        if isinstance(result, BaseException):
+            failed[field] = str(result)
+        else:
+            setattr(lecture, field, result)
             generated.append(field)
-        except Exception as e:
-            failed[field] = str(e)
 
     db.commit()
 
