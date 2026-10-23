@@ -22,3 +22,7 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Requested explicitly (already covered by the patterns above)
+*.env
+*.pyc

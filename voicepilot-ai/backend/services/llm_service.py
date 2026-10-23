@@ -50,9 +50,43 @@ def _strip_code_fences(raw: str) -> str:
     return raw.strip()
 
 
+def _strip_thinking(raw: str) -> str:
+    raw = re.sub(r"<think>.*?</think>", "", raw or "", flags=re.DOTALL)
+    if "<think>" in raw:
+        raw = raw.split("<think>", 1)[0]
+    return raw.strip()
+
+
+def _parse_json(raw: str):
+    raw = _strip_code_fences(_strip_thinking(raw))
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    for open_ch, close_ch in (("[", "]"), ("{", "}")):
+        start, end = raw.find(open_ch), raw.rfind(close_ch)
+        if start != -1 and end > start:
+            try:
+                return json.loads(raw[start:end + 1])
+            except json.JSONDecodeError:
+                continue
+    raise LLMGenerationError(f"Model did not return valid JSON. Received: {raw[:200]}")
+
+
+def _as_list(data) -> list:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        lists = [v for v in data.values() if isinstance(v, list)]
+        if lists:
+            return lists[0]
+        return [data]
+    raise LLMGenerationError("Model response was not a JSON array.")
+
+
 async def _generate_text(prompt: str, temperature: float = 0.3) -> str:
     if QWEN_API_KEY:
-        return await _generate_openrouter(prompt, temperature)
+        return _strip_thinking(await _generate_openrouter(prompt, temperature))
 
     client = get_client().aio
     response = await _generate_with_retry(
@@ -60,7 +94,9 @@ async def _generate_text(prompt: str, temperature: float = 0.3) -> str:
         prompt,
         types.GenerateContentConfig(temperature=temperature),
     )
-    return response.text.strip()
+    if not response.text:
+        raise LLMGenerationError("Gemini returned an empty response (possibly blocked by safety filters).")
+    return _strip_thinking(response.text)
 
 
 async def _generate_json(prompt: str, temperature: float = 0.3):
@@ -74,13 +110,7 @@ async def _generate_json(prompt: str, temperature: float = 0.3):
             temperature,
             json_mode=True,
         )
-        raw = _strip_code_fences(raw)
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError as e:
-            raise LLMGenerationError(
-                f"Model did not return valid JSON: {e}. Received: {raw[:200]}"
-            ) from e
+        return _parse_json(raw)
 
     client = get_client().aio
     response = await _generate_with_retry(
@@ -91,15 +121,9 @@ async def _generate_json(prompt: str, temperature: float = 0.3):
             response_mime_type="application/json",
         ),
     )
-
-    raw = _strip_code_fences(response.text)
-
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise LLMGenerationError(
-            f"Model did not return valid JSON: {e}. Received: {raw[:200]}"
-        ) from e
+    if not response.text:
+        raise LLMGenerationError("Gemini returned an empty response (possibly blocked by safety filters).")
+    return _parse_json(response.text)
 
 
 async def _generate_with_retry(client, prompt: str, config):
@@ -261,7 +285,7 @@ the material might actually pick. Never use filler like "none of the above".
 distractor is wrong.
 - Base everything strictly on the transcript.
 
-Return a JSON array of objects with exactly these keys:
+Return JSON: an array of objects (if you must return an object, use {{"items": [...]}}) with exactly these keys:
 "question" (string), "options" (array of 4 strings), "correct_index" (integer \
 0-3), "explanation" (string), "difficulty" (one of "easy", "medium", "hard").
 
@@ -276,8 +300,7 @@ async def generate_quiz(transcript: str, num_questions: int = 5) -> list[dict]:
         temperature=0.4,
     )
 
-    if not isinstance(data, list):
-        raise LLMGenerationError("Quiz response was not a JSON array.")
+    data = _as_list(data)
 
     # Validate each question so a malformed item can't reach the database
     # and blow up the frontend later.
@@ -323,7 +346,7 @@ Requirements:
 - `hint` is optional; include it only when the card is genuinely hard.
 - Base everything strictly on the transcript.
 
-Return a JSON array of objects with keys: "front" (string), "back" (string), \
+Return JSON: an array of objects (if you must return an object, use {{"items": [...]}}) with keys: "front" (string), "back" (string), \
 "hint" (string or null), "topic" (short string naming the theme).
 
 Transcript:
@@ -337,8 +360,7 @@ async def generate_flashcards(transcript: str, num_cards: int = 10) -> list[dict
         temperature=0.35,
     )
 
-    if not isinstance(data, list):
-        raise LLMGenerationError("Flashcard response was not a JSON array.")
+    data = _as_list(data)
 
     validated = [
         {
@@ -374,7 +396,7 @@ central the concept is to this lecture.
 - Extract between 5 and 15 concepts depending on the transcript's density.
 - Base everything strictly on the transcript.
 
-Return a JSON array of objects with keys: "term", "definition", "importance", \
+Return JSON: an array of objects (if you must return an object, use {{"items": [...]}}) with keys: "term", "definition", "importance", \
 "related_terms" (array of strings).
 
 Transcript:
@@ -388,8 +410,7 @@ async def generate_key_concepts(transcript: str) -> list[dict]:
         temperature=0.25,
     )
 
-    if not isinstance(data, list):
-        raise LLMGenerationError("Key concepts response was not a JSON array.")
+    data = _as_list(data)
 
     validated = [
         {
@@ -455,7 +476,7 @@ timestamps provided.
 - Chapters must be in chronological order and must not overlap.
 - The first chapter should start at or near 0.
 
-Return a JSON array of objects with keys: "start_seconds" (integer), "title" \
+Return JSON: an array of objects (if you must return an object, use {{"items": [...]}}) with keys: "start_seconds" (integer), "title" \
 (string), "summary" (string).
 
 Timestamped transcript:
@@ -473,8 +494,7 @@ async def generate_chapters(segments: list[dict]) -> list[dict]:
         temperature=0.3,
     )
 
-    if not isinstance(data, list):
-        raise LLMGenerationError("Chapters response was not a JSON array.")
+    data = _as_list(data)
 
     validated = []
     for item in data:
