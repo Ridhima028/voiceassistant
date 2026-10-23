@@ -109,6 +109,22 @@ services:
       timeout: 5s
       retries: 10
 
+  frontend:
+    build:
+      context: ./frontend
+
+    container_name: voicepilot-frontend
+
+    ports:
+      - "5173:5173"
+
+    # Vite proxies /api/* to this address (see frontend/vite.config.ts).
+    environment:
+      API_TARGET: http://backend:8000
+
+    depends_on:
+      - backend
+
 volumes:
   postgres-data:
   minio-data:
